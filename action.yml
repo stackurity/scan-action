@@ -1,0 +1,107 @@
+name: Stackurity scan
+description: Upload a repository's dependencies to your Stackurity server and fail the job on vulnerable findings.
+author: Stackurity
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  server:
+    description: Your Stackurity server URL, for example https://stackurity.example.com
+    required: true
+  token:
+    description: A collector token (Settings > API tokens, or `stackurity admin create-token`). Store it as a secret.
+    required: true
+  path:
+    description: Directory to scan.
+    default: "."
+  git-url:
+    description: Repository URL that identifies the asset. Use the same URL as a server-side repository integration so both land on one asset.
+    default: ""
+  environment:
+    description: Environment label for the asset, for example production.
+    default: ""
+  fail-on:
+    description: Fail when an open finding has this severity or higher (low, medium, high, critical).
+    default: ""
+  fail-on-priority:
+    description: Fail when an open finding has this priority or higher (P1 to P4).
+    default: ""
+  fail-on-kev:
+    description: Fail when an open finding is known to be exploited (CISA KEV).
+    default: "false"
+  only-fixable:
+    description: With a fail-on input, ignore findings that have no fixed version.
+    default: "false"
+  wait:
+    description: How long to wait for the server to evaluate the scan.
+    default: 5m
+  version:
+    description: Stackurity release to use, for example v0.3.1, or latest.
+    default: latest
+
+outputs:
+  version:
+    description: The Stackurity release that ran.
+    value: ${{ steps.download.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+    - name: Download and verify Stackurity
+      id: download
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+        RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$1"; }
+        if [ "$VERSION" = latest ]; then
+          VERSION=$(api https://api.github.com/repos/stackurity/stackurity/releases/latest | sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+        fi
+        case "$VERSION" in v[0-9]*) ;; *) echo "::error::version must look like v0.3.1 or be latest"; exit 1 ;; esac
+        case "$RUNNER_OS_NAME" in Linux) os=linux; ext= ;; macOS) os=darwin; ext= ;; Windows) os=windows; ext=.exe ;; *) echo "::error::unsupported runner OS $RUNNER_OS_NAME"; exit 1 ;; esac
+        case "$RUNNER_ARCH_NAME" in X64) arch=amd64 ;; ARM64) arch=arm64 ;; *) echo "::error::unsupported runner architecture $RUNNER_ARCH_NAME"; exit 1 ;; esac
+        name="stackurity_${VERSION}_${os}_${arch}${ext}"
+        dir="$RUNNER_TEMP/stackurity"
+        mkdir -p "$dir" && cd "$dir"
+        base="https://github.com/stackurity/stackurity/releases/download/$VERSION"
+        for f in "$name" SHA256SUMS SHA256SUMS.sigstore.json; do curl -fsSLo "$f" "$base/$f"; done
+        # The checksums are signed by the release workflow (keyless, Sigstore).
+        cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+          --certificate-identity "https://github.com/stackurity/stackurity/.github/workflows/release.yml@refs/tags/$VERSION" \
+          --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+        grep " $name\$" SHA256SUMS | sha256sum -c -
+        mv "$name" "stackurity$ext"
+        chmod +x "stackurity$ext"
+        echo "$dir" >> "$GITHUB_PATH"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Scan
+      shell: bash
+      env:
+        STACKURITY_SERVER: ${{ inputs.server }}
+        STACKURITY_TOKEN: ${{ inputs.token }}
+        SCAN_PATH: ${{ inputs.path }}
+        GIT_URL: ${{ inputs.git-url != '' && inputs.git-url || format('{0}/{1}', github.server_url, github.repository) }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        FAIL_ON_PRIORITY: ${{ inputs.fail-on-priority }}
+        FAIL_ON_KEV: ${{ inputs.fail-on-kev }}
+        ONLY_FIXABLE: ${{ inputs.only-fixable }}
+        WAIT: ${{ inputs.wait }}
+      run: |
+        set -euo pipefail
+        args=(scan "$SCAN_PATH" --git-url "$GIT_URL" --wait "$WAIT")
+        [ -n "$ENVIRONMENT" ] && args+=(--environment "$ENVIRONMENT")
+        [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
+        [ -n "$FAIL_ON_PRIORITY" ] && args+=(--fail-on-priority "$FAIL_ON_PRIORITY")
+        [ "$FAIL_ON_KEV" = true ] && args+=(--fail-on-kev)
+        [ "$ONLY_FIXABLE" = true ] && args+=(--only-fixable)
+        stackurity "${args[@]}"
