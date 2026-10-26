@@ -51,6 +51,10 @@ The job's exit status is 3 when findings meet the gate and 1 when the scan itsel
 
 `@v1` follows compatible updates of this action. For the strictest supply-chain posture, pin the action to a commit SHA and set `version` to a specific Stackurity release.
 
+## Tests
+
+The action is tested daily against a real Stackurity server and on Linux, macOS and Windows runners in [stackurity/scan-action-tests](https://github.com/stackurity/scan-action-tests) (GitHub Marketplace actions may not contain workflow files).
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).
