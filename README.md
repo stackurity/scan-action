@@ -1,6 +1,6 @@
 # Stackurity scan action
 
-Upload a repository's dependencies to your [Stackurity](https://stackurity.dev) server from GitHub Actions, and fail the job when it has vulnerable findings above a threshold you choose.
+Upload a repository's dependencies to your [Stackurity](https://stackurity.ai) server from GitHub Actions, and fail the job when it has vulnerable findings above a threshold you choose.
 
 The action downloads the `stackurity` release binary, checks its Sigstore signature and checksum, and runs `stackurity scan`. Lockfiles are read as data; nothing in your repository is executed.
 
