@@ -10,8 +10,18 @@ inputs:
     description: Your Stackurity server URL, for example https://stackurity.example.com
     required: true
   token:
-    description: A collector token (Settings > API tokens, or `stackurity admin create-token`). Store it as a secret.
-    required: true
+    description: >-
+      A collector token (Settings > API tokens, or `stackurity admin create-token`), stored as a secret.
+      Leave it empty to scan without a stored secret: the job then needs `permissions: id-token: write`,
+      and an administrator trusts the repository under Settings > Integrations > CI pipeline.
+    required: false
+    default: ""
+  audience:
+    description: Without a token, the audience to request the job's ID token for. Empty asks the server (its public URL).
+    default: ""
+  ci-trust:
+    description: Without a token, the id of the CI trust to use when several accept this repository.
+    default: ""
   path:
     description: Directory to scan.
     default: "."
@@ -88,8 +98,11 @@ runs:
       env:
         STACKURITY_SERVER: ${{ inputs.server }}
         STACKURITY_TOKEN: ${{ inputs.token }}
+        AUDIENCE: ${{ inputs.audience }}
+        CI_TRUST: ${{ inputs.ci-trust }}
         SCAN_PATH: ${{ inputs.path }}
         GIT_URL: ${{ inputs.git-url != '' && inputs.git-url || format('{0}/{1}', github.server_url, github.repository) }}
+        INPUT_GIT_URL_SET: ${{ inputs.git-url }}
         ENVIRONMENT: ${{ inputs.environment }}
         FAIL_ON: ${{ inputs.fail-on }}
         FAIL_ON_PRIORITY: ${{ inputs.fail-on-priority }}
@@ -98,6 +111,53 @@ runs:
         WAIT: ${{ inputs.wait }}
       run: |
         set -euo pipefail
+        if [ -z "$STACKURITY_TOKEN" ]; then
+          # No stored secret: exchange the job's OpenID Connect ID token for
+          # a collector token that lasts 15 minutes and can report only this
+          # repository. Done here, not by the CLI, so any CLI version works.
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::No token input, and this job cannot request an ID token. Add 'permissions: id-token: write' to the job (keep 'contents: read'), or pass the token input from a secret."
+            exit 1
+          fi
+          server="${STACKURITY_SERVER%/}"
+          json_field() { sed -n "s/.*\"$1\" *: *\"\([^\"]*\)\".*/\1/p" | head -1; }
+          aud="$AUDIENCE"
+          if [ -z "$aud" ]; then
+            aud=$(curl -fsSL "$server/api/v1/meta" | json_field ci_audience) || true
+            if [ -z "$aud" ]; then
+              echo "::error::$server does not accept CI ID tokens (it is older than keyless CI scans, or STACKURITY_BASE_URL is not set on it). Pass a token instead."
+              exit 1
+            fi
+          fi
+          id_token=$(curl -fsSL -G -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" --data-urlencode "audience=$aud" "$ACTIONS_ID_TOKEN_REQUEST_URL" | json_field value)
+          if [ -z "$id_token" ]; then
+            echo "::error::GitHub did not return an ID token."
+            exit 1
+          fi
+          echo "::add-mask::$id_token"
+          trust=0
+          if [ -n "$CI_TRUST" ]; then
+            case "$CI_TRUST" in *[!0-9]*) echo "::error::ci-trust must be a number"; exit 1 ;; esac
+            trust="$CI_TRUST"
+          fi
+          # The ID token goes in on stdin, not on curl's command line.
+          answer=$(printf '{"token":"%s","trust_id":%s}' "$id_token" "$trust" | curl -sS --fail-with-body -X POST \
+            -H "Content-Type: application/json" -H "X-Stackurity-CSRF: 1" --data-binary @- "$server/api/v1/ci/token") || {
+            echo "::error::Stackurity did not accept this job's ID token: $answer"
+            exit 1
+          }
+          STACKURITY_TOKEN=$(printf '%s' "$answer" | json_field token)
+          if [ -z "$STACKURITY_TOKEN" ]; then
+            echo "::error::Stackurity answered without a token: $answer"
+            exit 1
+          fi
+          echo "::add-mask::$STACKURITY_TOKEN"
+          export STACKURITY_TOKEN
+          repo=$(printf '%s' "$answer" | json_field repository_url)
+          echo "Using a 15-minute token for $repo, from this job's ID token."
+          # The token can report only that repository.
+          if [ -z "${INPUT_GIT_URL_SET:-}" ]; then GIT_URL="$repo"; fi
+        fi
         args=(scan "$SCAN_PATH" --git-url "$GIT_URL" --wait "$WAIT")
         [ -n "$ENVIRONMENT" ] && args+=(--environment "$ENVIRONMENT")
         [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")

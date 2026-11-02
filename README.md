@@ -6,6 +6,37 @@ The action downloads the `stackurity` release binary, checks its Sigstore signat
 
 ## Usage
 
+### Without a stored secret (recommended)
+
+The job proves which repository it runs for with GitHub's OpenID Connect ID token, and Stackurity gives it a collector token that lasts 15 minutes and can report only this repository. There is no secret to store or rotate.
+
+1. In Stackurity, an administrator trusts the repository under **Settings → Integrations → CI pipeline → Trust a repository** (optionally only a branch, an environment or one workflow file). The server needs its public URL set (`STACKURITY_BASE_URL`).
+2. Give the job `permissions: id-token: write` and leave out `token`:
+
+```yaml
+name: stackurity
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write   # lets the job request an ID token; grants no access to the repository
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: stackurity/scan-action@v1
+        with:
+          server: https://stackurity.example.com
+          fail-on: critical
+          only-fixable: true
+```
+
+The action requests an ID token for the server's audience (its public URL, read from the server, or the `audience` input), exchanges it at `POST /api/v1/ci/token`, masks both tokens in the log and scans with the repository's URL as its identity. It needs a Stackurity server with keyless CI scans; an older server, a job without `id-token: write`, or a repository no trust accepts fails the job with the reason.
+
+### With a stored token
+
 ```yaml
 name: stackurity
 on: [push, pull_request]
@@ -25,16 +56,18 @@ jobs:
           only-fixable: true
 ```
 
-Create the token in Stackurity under **Settings → API tokens** with the `collector` role (or run `stackurity admin create-token --name ci` on the server) and store it as a repository or organisation secret.
+Create the token in Stackurity under **Settings → API tokens** with the `collector` role (or run `stackurity admin create-token --name ci` on the server) and store it as a repository or organisation secret. When `token` is set, the action works as before and requests no ID token.
 
 ## Inputs
 
 | Input | Default | Description |
 |---|---|---|
 | `server` | (required) | Your Stackurity server URL |
-| `token` | (required) | A collector token |
+| `token` | | A collector token, stored as a secret. Empty: exchange the job's ID token (needs `permissions: id-token: write`) |
+| `audience` | the server's public URL | Without a token: the audience the ID token is requested for |
+| `ci-trust` | | Without a token: the id of the CI trust to use when several accept this repository |
 | `path` | `.` | Directory to scan |
-| `git-url` | this repository's URL | Identifies the asset; use the same URL as a server-side repository integration so both land on one asset |
+| `git-url` | this repository's URL | Identifies the asset; use the same URL as a server-side repository integration so both land on one asset. A token from the job's ID token can report only this repository's URL |
 | `environment` | | Environment label, for example `production` |
 | `fail-on` | | Fail on an open finding of this severity or higher: `low`, `medium`, `high`, `critical` |
 | `fail-on-priority` | | Fail on this priority or higher: `P1` to `P4` (accounts for exposure, environment and exploitation) |
