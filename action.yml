@@ -43,6 +43,12 @@ inputs:
   only-fixable:
     description: With a fail-on input, ignore findings that have no fixed version.
     default: "false"
+  fail-on-leak:
+    description: Fail when a key or password written in the repository's files has this severity or higher (low, medium, high, critical). Needs Stackurity v0.15.0 or later.
+    default: ""
+  leaks:
+    description: Look for keys and passwords written in the repository's files. Set to false to turn it off.
+    default: "true"
   wait:
     description: How long to wait for the server to evaluate the scan.
     default: 5m
@@ -108,6 +114,8 @@ runs:
         FAIL_ON_PRIORITY: ${{ inputs.fail-on-priority }}
         FAIL_ON_KEV: ${{ inputs.fail-on-kev }}
         ONLY_FIXABLE: ${{ inputs.only-fixable }}
+        FAIL_ON_LEAK: ${{ inputs.fail-on-leak }}
+        LEAKS: ${{ inputs.leaks }}
         WAIT: ${{ inputs.wait }}
       run: |
         set -euo pipefail
@@ -164,4 +172,19 @@ runs:
         [ -n "$FAIL_ON_PRIORITY" ] && args+=(--fail-on-priority "$FAIL_ON_PRIORITY")
         [ "$FAIL_ON_KEV" = true ] && args+=(--fail-on-kev)
         [ "$ONLY_FIXABLE" = true ] && args+=(--only-fixable)
+        if [ -n "$FAIL_ON_LEAK" ] || [ "$LEAKS" = false ]; then
+          # Releases before v0.15.0 have no key scan and refuse these flags.
+          if ! stackurity scan -h 2>&1 | grep -q -- '--no-leaks'; then
+            echo "::error::fail-on-leak and leaks need Stackurity v0.15.0 or later; this job runs $(stackurity --version 2>/dev/null || echo an older release). Set version to v0.15.0 or later, or leave them out."
+            exit 1
+          fi
+          if [ "$LEAKS" = false ]; then
+            if [ -n "$FAIL_ON_LEAK" ]; then
+              echo "::error::fail-on-leak needs the key scan; leave leaks at true."
+              exit 1
+            fi
+            args+=(--no-leaks)
+          fi
+          [ -n "$FAIL_ON_LEAK" ] && args+=(--fail-on-leak "$FAIL_ON_LEAK")
+        fi
         stackurity "${args[@]}"
