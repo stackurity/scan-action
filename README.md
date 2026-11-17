@@ -75,6 +75,7 @@ Create the token in Stackurity under **Settings → API tokens** with the `colle
 | `only-fixable` | `false` | With a fail-on input, ignore findings that have no fixed version yet |
 | `fail-on-leak` | | Fail on a key or password written in the repository's files of this severity or higher: `low`, `medium`, `high`, `critical`. Needs Stackurity v0.15.0 or later |
 | `leaks` | `true` | Look for keys and passwords in the repository's files. `false` turns it off |
+| `policy` | `auto` | Check the organisation's [policy gates](#policy-gates): `auto` or `off` |
 | `wait` | `5m` | How long to wait for the server to evaluate the scan |
 | `version` | `latest` | Stackurity release to use, for example `v0.3.1` |
 
@@ -83,6 +84,24 @@ Without a `fail-on` input the scan is uploaded and the job passes. Findings that
 From Stackurity v0.15.0 the scan also looks for keys, tokens and passwords written in the files Git tracks (a gitignored `.env` is not read). Leaks are printed with their values masked, and the value never leaves the runner. `fail-on-leak: high` fails the job on one, without waiting for the server. See [Leaked keys](https://github.com/stackurity/stackurity/blob/main/docs/leaked-keys.md).
 
 The job's exit status is 3 when findings meet the gate and 1 when the scan itself failed.
+
+## Policy gates
+
+With a Stackurity release that has [policy gates](https://github.com/stackurity/stackurity/blob/main/docs/policy-gates.md#in-ci), the scan also checks the rules your organisation keeps in Stackurity (for example "no known exploited vulnerability" or "no critical older than 14 days in production"), once the server has evaluated the scan. It prints a "Policy gates" block with each violation's policy, mode, reason and a link:
+
+- a violation of a policy in warn mode is printed and the job passes;
+- a violation of a policy in enforce mode fails the job with exit status 3, as `fail-on` does.
+
+The `fail-on` inputs keep working and are applied as well. When the server has no policy gates, or none applies to the repository, nothing changes and the scan does not wait for them. `policy: off` skips the check:
+
+```yaml
+      - uses: stackurity/scan-action@v1
+        with:
+          server: https://stackurity.example.com
+          policy: off
+```
+
+Releases of Stackurity before policy gates ignore the input.
 
 ## Pinning
 
