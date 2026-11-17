@@ -49,6 +49,12 @@ inputs:
   leaks:
     description: Look for keys and passwords written in the repository's files. Set to false to turn it off.
     default: "true"
+  policy:
+    description: >-
+      Check the organisation's policy gates once the server has evaluated the scan: auto (when the server has
+      policy gates and one applies to the repository) or off. Warn-mode violations are printed; a violation of an
+      enforced policy fails the job. Releases without policy gates ignore it.
+    default: auto
   wait:
     description: How long to wait for the server to evaluate the scan.
     default: 5m
@@ -116,6 +122,7 @@ runs:
         ONLY_FIXABLE: ${{ inputs.only-fixable }}
         FAIL_ON_LEAK: ${{ inputs.fail-on-leak }}
         LEAKS: ${{ inputs.leaks }}
+        POLICY: ${{ inputs.policy }}
         WAIT: ${{ inputs.wait }}
       run: |
         set -euo pipefail
@@ -186,5 +193,15 @@ runs:
             args+=(--no-leaks)
           fi
           [ -n "$FAIL_ON_LEAK" ] && args+=(--fail-on-leak "$FAIL_ON_LEAK")
+        fi
+        case "$POLICY" in
+          "") POLICY=auto ;;
+          auto|off) ;;
+          *) echo "::error::policy must be auto or off"; exit 1 ;;
+        esac
+        # Releases before policy gates have no --policy flag and no check,
+        # so there is nothing to pass on to them.
+        if stackurity scan -h 2>&1 | grep -q -- '--policy'; then
+          args+=(--policy "$POLICY")
         fi
         stackurity "${args[@]}"
